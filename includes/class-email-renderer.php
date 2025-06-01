@@ -82,25 +82,67 @@ class BPEP_Email_Renderer {
     }
     
     /**
-     * Send test email
+     * Send test email with improved error handling and fallback
      */
     public function send_test_email($email_type, $test_email, $custom_tokens = array()) {
         if (empty($email_type) || empty($test_email)) {
             throw new Exception(__('Email type and test email address are required', 'buddypress-email-preview'));
         }
         
+        // Validate email address
+        if (!is_email($test_email)) {
+            throw new Exception(__('Invalid email address provided', 'buddypress-email-preview'));
+        }
+        
         // Get token manager
         $token_manager = new BPEP_Token_Manager();
         $tokens = $token_manager->get_sample_tokens($email_type, $custom_tokens);
         
-        // Create a test recipient
-        $recipient = new BP_Email_Recipient($test_email);
+        // Try BuddyPress email system first
+        $bp_result = $this->send_via_buddypress($email_type, $test_email, $tokens);
         
+        if ($bp_result === true) {
+            return true;
+        }
+        
+        // If BuddyPress method fails, try fallback method
+        $fallback_result = $this->send_via_fallback($email_type, $test_email, $tokens);
+        
+        if ($fallback_result === true) {
+            return true;
+        }
+        
+        // If both methods fail, throw an exception with detailed error
+        $error_message = __('Failed to send test email. ', 'buddypress-email-preview');
+        
+        if (is_wp_error($bp_result)) {
+            $error_message .= __('BuddyPress error: ', 'buddypress-email-preview') . $bp_result->get_error_message() . ' ';
+        }
+        
+        if (is_wp_error($fallback_result)) {
+            $error_message .= __('Fallback error: ', 'buddypress-email-preview') . $fallback_result->get_error_message();
+        }
+        
+        throw new Exception($error_message);
+    }
+    
+    /**
+     * Send email via BuddyPress email system
+     */
+    private function send_via_buddypress($email_type, $test_email, $tokens) {
         try {
+            // Create a test recipient
+            $recipient = new BP_Email_Recipient($test_email);
+            
             // For GES emails, we need to set up the GES tokens properly
             if (strpos($email_type, 'bp-ges-') === 0) {
                 $this->setup_ges_environment($tokens);
             }
+            
+            // Add recipient tokens to the tokens array
+            $tokens['recipient.name'] = $recipient->get_name();
+            $tokens['recipient.email'] = $recipient->get_address();
+            $tokens['recipient.username'] = $recipient->get_name(); // Fallback if username not available
             
             // Send the email using BuddyPress email system
             $result = bp_send_email($email_type, $recipient, array(
@@ -112,9 +154,66 @@ class BPEP_Email_Renderer {
                 $this->cleanup_ges_environment();
             }
             
-            return !is_wp_error($result);
+            return $result;
+            
         } catch (Exception $e) {
-            throw new Exception(__('Failed to send test email: ', 'buddypress-email-preview') . $e->getMessage());
+            return new WP_Error('bp_email_failed', $e->getMessage());
+        }
+    }
+    
+    /**
+     * Send email via WordPress fallback method
+     */
+    private function send_via_fallback($email_type, $test_email, $tokens) {
+        try {
+            // Get the email object
+            $email = bp_get_email($email_type);
+            if (is_wp_error($email)) {
+                return $email;
+            }
+            
+            // Get email content
+            $subject = $email->get_subject();
+            $content = $email->get_content_html();
+            
+            // If no HTML content, use plain text
+            if (empty($content)) {
+                $content = $email->get_content_plaintext();
+                $content = nl2br(esc_html($content));
+            }
+            
+            // Apply email template
+            $template = $email->get_template();
+            if ($template && strpos($template, '{{{content}}}') !== false) {
+                $content = str_replace('{{{content}}}', $content, $template);
+            }
+            
+            // Replace tokens in content and subject
+            $content = $this->replace_tokens_in_content($content, $tokens);
+            $subject = $this->replace_tokens_in_content($subject, $tokens);
+            
+            // Apply email styling
+            $content = $this->apply_email_styling($content);
+            
+            // Add test email notice
+            $content = '<div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin-bottom: 20px; border-radius: 4px; color: #856404;">' .
+                      '<strong>' . __('Test Email Notice:', 'buddypress-email-preview') . '</strong> ' .
+                      __('This is a test email sent from BuddyPress Email Preview plugin.', 'buddypress-email-preview') .
+                      '</div>' . $content;
+            
+            // Set up email headers
+            $headers = array(
+                'Content-Type: text/html; charset=UTF-8',
+                'From: ' . get_bloginfo('name') . ' <' . get_bloginfo('admin_email') . '>'
+            );
+            
+            // Send the email
+            $result = wp_mail($test_email, $subject, $content, $headers);
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            return new WP_Error('fallback_email_failed', $e->getMessage());
         }
     }
     

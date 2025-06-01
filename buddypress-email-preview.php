@@ -236,6 +236,11 @@ class BuddyPress_Email_Preview {
                         <button id="bpep-send-test" class="button button-secondary" disabled>
                             <?php _e('Send Test Email', 'buddypress-email-preview'); ?>
                         </button>
+                        
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
+                            <h4 style="margin: 0 0 5px 0; font-size: 12px;"><?php _e('Email System Status:', 'buddypress-email-preview'); ?></h4>
+                            <?php $this->display_email_diagnostics(); ?>
+                        </div>
                     </div>
                     
                     <div class="bpep-card">
@@ -405,6 +410,12 @@ class BuddyPress_Email_Preview {
             wp_send_json_error(__('Invalid email address', 'buddypress-email-preview'));
         }
         
+        // Check if WordPress can send emails at all
+        $wp_mail_test = $this->test_wp_mail_functionality();
+        if (is_wp_error($wp_mail_test)) {
+            wp_send_json_error(__('WordPress email system is not working: ', 'buddypress-email-preview') . $wp_mail_test->get_error_message());
+        }
+        
         try {
             $renderer = new BPEP_Email_Renderer();
             $result = $renderer->send_test_email($email_type, $test_email, $custom_tokens);
@@ -412,11 +423,107 @@ class BuddyPress_Email_Preview {
             if ($result) {
                 wp_send_json_success(__('Test email sent successfully!', 'buddypress-email-preview'));
             } else {
-                wp_send_json_error(__('Failed to send test email', 'buddypress-email-preview'));
+                wp_send_json_error(__('Failed to send test email. Please check your email configuration.', 'buddypress-email-preview'));
             }
         } catch (Exception $e) {
             wp_send_json_error($e->getMessage());
         }
+    }
+    
+    /**
+     * Test WordPress email functionality
+     */
+    private function test_wp_mail_functionality() {
+        // Test if wp_mail function exists and works
+        if (!function_exists('wp_mail')) {
+            return new WP_Error('wp_mail_missing', __('wp_mail function is not available', 'buddypress-email-preview'));
+        }
+        
+        // Check if there are any mail-related plugins that might interfere
+        $mail_plugins = array(
+            'wp-mail-smtp/wp_mail_smtp.php',
+            'easy-wp-smtp/easy-wp-smtp.php',
+            'post-smtp/postman-smtp.php'
+        );
+        
+        $active_mail_plugins = array();
+        foreach ($mail_plugins as $plugin) {
+            if (is_plugin_active($plugin)) {
+                $active_mail_plugins[] = $plugin;
+            }
+        }
+        
+        // If mail plugins are active, assume they're configured correctly
+        if (!empty($active_mail_plugins)) {
+            return true;
+        }
+        
+        // Check basic PHP mail configuration
+        if (!function_exists('mail')) {
+            return new WP_Error('php_mail_missing', __('PHP mail function is not available', 'buddypress-email-preview'));
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Display email diagnostics information
+     */
+    private function display_email_diagnostics() {
+        $diagnostics = array();
+        
+        // Check wp_mail function
+        if (function_exists('wp_mail')) {
+            $diagnostics[] = '<span style="color: green;">✓</span> wp_mail function available';
+        } else {
+            $diagnostics[] = '<span style="color: red;">✗</span> wp_mail function missing';
+        }
+        
+        // Check PHP mail function
+        if (function_exists('mail')) {
+            $diagnostics[] = '<span style="color: green;">✓</span> PHP mail function available';
+        } else {
+            $diagnostics[] = '<span style="color: red;">✗</span> PHP mail function missing';
+        }
+        
+        // Check for SMTP plugins
+        $mail_plugins = array(
+            'wp-mail-smtp/wp_mail_smtp.php' => 'WP Mail SMTP',
+            'easy-wp-smtp/easy-wp-smtp.php' => 'Easy WP SMTP',
+            'post-smtp/postman-smtp.php' => 'Post SMTP'
+        );
+        
+        $active_mail_plugins = array();
+        foreach ($mail_plugins as $plugin_file => $plugin_name) {
+            if (is_plugin_active($plugin_file)) {
+                $active_mail_plugins[] = $plugin_name;
+            }
+        }
+        
+        if (!empty($active_mail_plugins)) {
+            $diagnostics[] = '<span style="color: green;">✓</span> SMTP Plugin: ' . implode(', ', $active_mail_plugins);
+        } else {
+            $diagnostics[] = '<span style="color: orange;">⚠</span> No SMTP plugin detected (using PHP mail)';
+        }
+        
+        // Check BuddyPress email system
+        if (function_exists('bp_send_email')) {
+            $diagnostics[] = '<span style="color: green;">✓</span> BuddyPress email system available';
+        } else {
+            $diagnostics[] = '<span style="color: red;">✗</span> BuddyPress email system missing';
+        }
+        
+        // Display diagnostics
+        echo '<div style="font-size: 11px; line-height: 1.4;">';
+        foreach ($diagnostics as $diagnostic) {
+            echo '<div>' . $diagnostic . '</div>';
+        }
+        echo '</div>';
+        
+        // Add troubleshooting note
+        echo '<div style="margin-top: 8px; padding: 5px; background: #f0f0f1; border-radius: 3px; font-size: 10px; color: #666;">';
+        echo '<strong>Troubleshooting:</strong> If test emails fail, check your server\'s email configuration or install an SMTP plugin like WP Mail SMTP.';
+        echo '</div>';
     }
     
     /**
